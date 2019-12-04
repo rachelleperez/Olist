@@ -140,7 +140,7 @@ SELECT * FROM product_category_name_translation
 
 SELECT c.customer_unique_id, 
 	MIN(o.order_purchase_timestamp) as first_order_date, 
-	MIN(o.order_purchase_timestamp) + interval '182.5 day' AS six_months_from_first_order,
+	MIN(o.order_purchase_timestamp) + interval '182.5 day' AS six_months_interfrom_first_order,
 	COUNT(o.order_id)
 FROM Orders o INNER JOIN Customers c USING(customer_id)
 GROUP BY c.customer_unique_id
@@ -360,7 +360,7 @@ SELECT o.order_id,
 	oi.price, pc.quantity, 
 	oi.freight_value, 
 	(oi.price * pc.quantity) + oi.freight_value AS total_by_product, 
-	SUM(((oi.price * pc.quantity) + oi.freight_value)) OVER (PARTITION BY o.order_id)
+	((oi.price * pc.quantity) + oi.freight_value)) OVER (PARTITION BY o.order_id)
 FROM order_items oi INNER JOIN orders o USING(order_id) INNER JOIN product_count pc USING (order_id)
 ORDER BY order_id, product_id
 
@@ -433,8 +433,215 @@ GROUP BY customer_unique_id
 ORDER BY customer_unique_id;
 
 
+-- Using 6-month table to connect
+
+WITH first_6_months_dates AS(
+SELECT c.customer_unique_id, 
+	MIN(o.order_purchase_timestamp) as first_order_date, 
+	MIN(o.order_purchase_timestamp) + interval '182.5 day' AS six_months_from_first_order
+FROM Orders o INNER JOIN Customers c USING(customer_id)
+GROUP BY c.customer_unique_id
+ORDER BY c.customer_unique_id), 
+
+first_6_months_activity AS (
+
+SELECT *
+FROM first_6_months_dates
+	INNER JOIN customers USING(customer_unique_id)
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+WHERE order_purchase_timestamp < six_months_from_first_order)
+
+
+SELECT 
+	customer_unique_id,
+	MIN(order_purchase_timestamp) AS date_first_order,
+	EXTRACT(YEAR FROM MIN(order_purchase_timestamp)) AS year_first_order,
+	EXTRACT(MONTH FROM MIN(order_purchase_timestamp)) AS month_first_order,
+	COUNT(DISTINCT order_id) AS total_orders_first_6_months,
+	SUM(payment_value) AS total_paid_first_6_months
+FROM first_6_months_activity
+GROUP BY customer_unique_id
+ORDER BY customer_unique_id;
+
+-- What value should I use for revenue? Does calculated total match payment value columns
 
 
 
+olist=# SELECT SUM(price) FROM orders INNER JOIN order_items USING(order_id) INNER JOIN products USING(product_id);
+       sum
+------------------
+ 13591643.7000074
+(1 row)
 
+
+olist=# SELECT SUM(freight_value) FROM orders INNER JOIN order_items USING(order_id) INNER JOIN products USING(product_id);
+       sum
+------------------
+ 2251909.53999995
+(1 row)
+
+
+olist=# SELECT SUM(payment_value) FROM order_payments;
+       sum
+------------------
+ 16008872.1199988
+(1 row)
+
+-- Do Customer that make one order in 6 months, end up making orders later or remain inactive?
+
+WITH first_6_months_dates AS(
+SELECT c.customer_unique_id, 
+	MIN(o.order_purchase_timestamp) as first_order_date, 
+	MIN(o.order_purchase_timestamp) + interval '182.5 day' AS six_months_from_first_order
+FROM Orders o INNER JOIN Customers c USING(customer_id)
+GROUP BY c.customer_unique_id
+ORDER BY c.customer_unique_id), 
+
+first_6_months_activity AS (
+
+SELECT *
+FROM first_6_months_dates
+	INNER JOIN customers USING(customer_unique_id)
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+WHERE order_purchase_timestamp < six_months_from_first_order), 
+
+totals_by_customer AS (
+
+SELECT *
+FROM customers
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+)
+
+SELECT 
+	f.customer_unique_id,
+	MIN(f.order_purchase_timestamp) AS date_first_order,
+	COUNT(DISTINCT t.order_id) AS total_orders,
+	COUNT(DISTINCT f.order_id) AS total_orders_first_6_months,
+	COUNT(DISTINCT t.order_id) - COUNT(DISTINCT f.order_id) AS Count_difference,
+	SUM(t.payment_value) AS total_paid,
+	SUM(f.payment_value) AS total_paid_first_6_months,
+	SUM(t.payment_value) - SUM(f.payment_value) AS Rev_Difference
+FROM first_6_months_activity f INNER JOIN totals_by_customer t USING(customer_unique_id)
+GROUP BY f.customer_unique_id
+HAVING COUNT(DISTINCT f.order_id) = 1 AND (COUNT(DISTINCT t.order_id) - COUNT(DISTINCT f.order_id)) <> 0
+ORDER BY Count_difference DESC;
+
+-- COUNT the number of customers who make 1 order in the first 6 months and LATER make another order.
+
+WITH first_6_months_dates AS(
+SELECT c.customer_unique_id, 
+	MIN(o.order_purchase_timestamp) as first_order_date, 
+	MIN(o.order_purchase_timestamp) + interval '182.5 day' AS six_months_from_first_order
+FROM Orders o INNER JOIN Customers c USING(customer_id)
+GROUP BY c.customer_unique_id
+ORDER BY c.customer_unique_id), 
+
+first_6_months_activity AS (
+
+SELECT *
+FROM first_6_months_dates
+	INNER JOIN customers USING(customer_unique_id)
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+WHERE order_purchase_timestamp < six_months_from_first_order), 
+
+totals_by_customer AS (
+
+SELECT *
+FROM customers
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+), 
+
+reworked_customer_aggregates AS (
+
+SELECT 
+	f.customer_unique_id,
+	MIN(f.order_purchase_timestamp) AS date_first_order,
+	COUNT(DISTINCT t.order_id) AS total_orders,
+	COUNT(DISTINCT f.order_id) AS total_orders_first_6_months,
+	COUNT(DISTINCT t.order_id) - COUNT(DISTINCT f.order_id) AS Count_difference,
+	SUM(t.payment_value) AS total_paid,
+	SUM(f.payment_value) AS total_paid_first_6_months,
+	SUM(t.payment_value) - SUM(f.payment_value) AS Rev_Difference
+FROM first_6_months_activity f INNER JOIN totals_by_customer t USING(customer_unique_id)
+GROUP BY f.customer_unique_id
+HAVING COUNT(DISTINCT f.order_id) = 1 AND (COUNT(DISTINCT t.order_id) - COUNT(DISTINCT f.order_id)) <> 0
+ORDER BY Count_difference DESC)
+
+SELECT COUNT (*) 
+FROM reworked_customer_aggregates;
+
+ count
+-------
+   502
+(1 row)
+
+SELECT 
+
+olist=# SELECT COUNT(DISTINCT customer_unique_id) FROM customers INNER JOIN orders USING(customer_id);
+ count
+-------
+ 96096
+(1 row)
+
+-- Only 502 FROM 96,096 total customers made 1 order within 6 months and later made another. Only 0.5%. Not sigficant. 
+
+-- Min/Max Dates = First and last orders in dataset
+
+olist=# SELECT MAX(order_purchase_timestamp) FROM orders;
+         max
+---------------------
+ 2018-10-17 17:30:18
+(1 row)
+
+
+olist=# SELECT MIN(order_purchase_timestamp) FROM orders;
+         min
+---------------------
+ 2016-09-04 21:15:19
+(1 row)
+
+-- How many customers have a first order within the last 6 months?
+
+WITH brand_new_customers AS(
+
+SELECT *, (SELECT MAX(order_purchase_timestamp) FROM orders) - interval '182.5 day' AS Last_6_months_in_data
+FROM customers 
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+WHERE order_purchase_timestamp > ((SELECT MAX(order_purchase_timestamp) FROM orders) - interval '182.5 day')
+)
+
+SELECT COUNT (DISTINCT customer_unique_id) FROM brand_new_customers;
+
+-------
+ 28427
+(1 row)
+
+
+WITH min_date AS
+
+(SELECT customer_unique_id, MIN(order_purchase_timestamp)
+FROM customers 
+	INNER JOIN orders USING(customer_id)
+GROUP BY customer_unique_id)
+
+SELECT COUNT(DISTINCT m.customer_unique_id)
+FROM min_date m
+	INNER JOIN customers USING(customer_unique_id)
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+WHERE min >  CAST('2018-04-17' AS timestamp);
+
+ count
+-------
+ 28112
+(1 row)
+
+-- Are 30% of customers brand new! Should they be dropped?
+.
 
