@@ -643,5 +643,90 @@ WHERE min >  CAST('2018-04-17' AS timestamp);
 (1 row)
 
 -- Are 30% of customers brand new! Should they be dropped?
-.
 
+-- How many orders are cancelled? Should these be removed?
+
+olist=# SELECT DISTINCT order_status FROM orders;
+ order_status
+--------------
+ shipped
+ unavailable
+ invoiced
+ created
+ approved
+ processing
+ delivered
+ canceled
+(8 rows)
+
+
+olist=# SELECT COUNT(DISTINCT order_id) FROM orders WHERE order_status = 'canceled';
+ count
+-------
+   625
+(1 row)
+
+
+olist=# SELECT COUNT(DISTINCT order_id) FROM orders;
+ count
+-------
+ 99441
+(1 row)
+
+-- Only 0.06% of orders are canceled. 
+
+-- But, are they adding to the payments total? YES
+
+SELECT SUM(payment_value) FROM orders INNER JOIN order_payments USING(order_id) WHERE order_status = 'canceled';
+   sum
+----------
+ 143255.6
+(1 row)
+
+-- Because they add to payment totals, these will be removed
+
+-- Update to DF , removing cancelled orders. Unavailable will be left as these were real orders the customer wanted and is potential revenue the customer was willing to pay.
+
+.
+WITH first_6_months_dates AS(
+SELECT c.customer_unique_id, 
+	MIN(o.order_purchase_timestamp) as first_order_date, 
+	MIN(o.order_purchase_timestamp) + interval '182.5 day' AS six_months_from_first_order
+FROM Orders o INNER JOIN Customers c USING(customer_id)
+GROUP BY c.customer_unique_id
+ORDER BY c.customer_unique_id), 
+
+first_6_months_activity AS (
+
+SELECT *
+FROM first_6_months_dates
+	INNER JOIN customers USING(customer_unique_id)
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+WHERE order_purchase_timestamp < six_months_from_first_order AND order_status <> 'canceled')
+
+
+SELECT 
+	customer_unique_id,
+	MIN(order_purchase_timestamp) AS date_first_order,
+	EXTRACT(YEAR FROM MIN(order_purchase_timestamp)) AS year_first_order,
+	EXTRACT(MONTH FROM MIN(order_purchase_timestamp)) AS month_first_order,
+	COUNT(DISTINCT order_id) AS total_orders_first_6_months,
+	SUM(payment_value) AS total_paid_first_6_months
+FROM first_6_months_activity
+GROUP BY customer_unique_id
+ORDER BY customer_unique_id;
+
+
+-- Start creating pieces to add to df
+
+          customer_id            |        customer_unique_id        | customer_zip_code |          customer_city           | customer_state
+----------------------------------+----------------------------------+-------------------+----------------------------------+----------------
+
+geolocation_zip_code_prefix |    geolocation_lat    |  geolocation_ing  |            geolocation_city            | geolocation_state
+-----------------------------+-----------------------+-------------------+----------------------------------------+-------------------
+                        1037 |     -23.5456212811527 | -46.6392920480017 | sao paulo                              | SP
+
+SELECT customer_unique_id, customer_zip_code, geolocation_city AS customer_geo_city, geolocation_state AS customer_geo_city
+FROM customers c INNER JOIN geolocation g ON c.customer_zip_code = g.geolocation_zip_code_prefix
+ORDER BY customer_unqiue_id;
