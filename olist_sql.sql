@@ -685,7 +685,7 @@ SELECT SUM(payment_value) FROM orders INNER JOIN order_payments USING(order_id) 
 
 -- Because they add to payment totals, these will be removed
 
--- Update to DF , removing cancelled orders. Unavailable will be left as these were real orders the customer wanted and is potential revenue the customer was willing to pay.
+-- df1 = Update to DF , removing cancelled orders. Unavailable will be left as these were real orders the customer wanted and is potential revenue the customer was willing to pay.
 
 .
 WITH first_6_months_dates AS(
@@ -718,7 +718,40 @@ GROUP BY customer_unique_id
 ORDER BY customer_unique_id;
 
 
--- Start creating pieces to add to df
+-- Create view #1
+
+CREATE VIEW df2 AS 
+
+WITH first_6_months_dates AS(
+SELECT c.customer_unique_id, 
+	MIN(o.order_purchase_timestamp) as first_order_date, 
+	MIN(o.order_purchase_timestamp) + interval '182.5 day' AS six_months_from_first_order
+FROM Orders o INNER JOIN Customers c USING(customer_id)
+GROUP BY c.customer_unique_id
+ORDER BY c.customer_unique_id), 
+
+first_6_months_activity AS (
+
+SELECT *
+FROM first_6_months_dates
+	INNER JOIN customers USING(customer_unique_id)
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+WHERE order_purchase_timestamp < six_months_from_first_order AND order_status <> 'canceled')
+
+
+SELECT 
+	customer_unique_id,
+	MIN(order_purchase_timestamp) AS date_first_order,
+	EXTRACT(YEAR FROM MIN(order_purchase_timestamp)) AS year_first_order,
+	EXTRACT(MONTH FROM MIN(order_purchase_timestamp)) AS month_first_order,
+	COUNT(DISTINCT order_id) AS total_orders_first_6_months,
+	SUM(payment_value) AS total_paid_first_6_months
+FROM first_6_months_activity
+GROUP BY customer_unique_id
+ORDER BY customer_unique_id;
+
+-- Start creating pieces to add to df. Now customer demographic
 
           customer_id            |        customer_unique_id        | customer_zip_code |          customer_city           | customer_state
 ----------------------------------+----------------------------------+-------------------+----------------------------------+----------------
@@ -727,6 +760,537 @@ geolocation_zip_code_prefix |    geolocation_lat    |  geolocation_ing  |       
 -----------------------------+-----------------------+-------------------+----------------------------------------+-------------------
                         1037 |     -23.5456212811527 | -46.6392920480017 | sao paulo                              | SP
 
-SELECT customer_unique_id, customer_zip_code, geolocation_city AS customer_geo_city, geolocation_state AS customer_geo_city
+SELECT DISTINCT customer_unique_id, customer_zip_code, geolocation_city AS customer_geo_city, geolocation_state AS customer_geo_state
 FROM customers c INNER JOIN geolocation g ON c.customer_zip_code = g.geolocation_zip_code_prefix
-ORDER BY customer_unqiue_id;
+ORDER BY customer_unique_id;
+
+
+\COPY (SELECT DISTINCT customer_unique_id, customer_zip_code, geolocation_city AS customer_geo_city, geolocation_state AS customer_geo_state FROM customers c INNER JOIN geolocation g ON c.customer_zip_code = g.geolocation_zip_code_prefix) TO 'C:/Users/rache/DATA/Olist/GITHUB_OLIST/customer_demographics.csv' CSV HEADER;
+
+SELECT COUNT(DISTINCT customer_id) 
+FROM customers c INNER JOIN geolocation g ON c.customer_zip_code = g.geolocation_zip_code_prefix;
+
+-- Does the count matches the rows in the Python upload?
+-- No, is zip code data in the geolocation table distinct? - NO
+
+olist=# SELECT COUNT(DISTINCT geolocation_zip_code_prefix) FROM geolocation;
+ count
+-------
+ 19015
+(1 row)
+
+
+olist=# SELECT COUNT(geolocation_state) FROM geolocation;
+  count
+---------
+ 1000163
+(1 row)
+
+
+olist=# SELECT COUNT(DISTINCT geolocation_state) FROM geolocation;
+ count
+-------
+    27
+(1 row)
+
+-- The name of the city variates BUT the state doesn't so we will only add state data. 
+
+
+-- ADDING CUSTOMER demographic
+
+df1
+
+       customer_unique_id        |  
+	   date_first_order   | 
+	   year_first_order | 
+	   month_first_order | 
+	   total_orders_first_6_months | 
+	   total_paid_first_6_months
+----------------------------------+---------------------+------------------+-------------------+-----------------------------+---------------------------
+
+-- DF2 saved! 
+
+        customer_unique_id        |  date_first_order   | year_first_order | month_first_order | total_orders_first_6_months | total_paid_first_6_months
+----------------------------------+---------------------+------------------+-------------------+-----------------------------+---------------------------
+
+-- Now, let's add geolocation
+
+
+WITH first_6_months_dates AS(
+SELECT c.customer_unique_id, 
+	MIN(o.order_purchase_timestamp) as first_order_date, 
+	MIN(o.order_purchase_timestamp) + interval '182.5 day' AS six_months_from_first_order
+FROM Orders o INNER JOIN Customers c USING(customer_id)
+GROUP BY c.customer_unique_id
+ORDER BY c.customer_unique_id), 
+
+first_6_months_activity AS 
+(
+SELECT *
+FROM first_6_months_dates
+	INNER JOIN customers USING(customer_unique_id)
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_payments USING(order_id)
+WHERE order_purchase_timestamp < six_months_from_first_order AND order_status <> 'canceled'),
+
+df1 AS 
+(
+SELECT 
+	customer_unique_id,
+	customer_zip_code,
+	MIN(order_purchase_timestamp) AS date_first_order,
+	EXTRACT(YEAR FROM MIN(order_purchase_timestamp)) AS year_first_order,
+	EXTRACT(MONTH FROM MIN(order_purchase_timestamp)) AS month_first_order,
+	COUNT(DISTINCT order_id) AS total_orders_first_6_months,
+	SUM(payment_value) AS total_paid_first_6_months
+FROM first_6_months_activity
+GROUP BY customer_unique_id, customer_zip_code
+ORDER BY customer_unique_id)
+
+SELECT df1.customer_unique_id, df1.customer_zip_code AS customer_geo_zip, g.geolocation_state AS customer_geo_state, g.geolocation_lat AS customer_geo_lat, g.geolocation_ing AS customer_geo_lng
+FROM df1 INNER JOIN (SELECT DISTINCT geolocation_state, geolocation_zip_code_prefix, geolocation_lat, geolocation_ing FROM geolocation) AS g 
+ON df1.customer_zip_code = g.geolocation_zip_code_prefix;
+
+--
+
+-- clean geo table with unique zip_code
+
+CREATE VIEW geo_clean AS
+SELECT 
+	DISTINCT ON 
+	(geolocation_zip_code_prefix) geolocation_zip_code_prefix, 
+	geolocation_state, 
+	geolocation_lat, 
+	geolocation_ing
+FROM geolocation;
+
+-- join df2 with geo_clean AS df3 
+
+CREATE VIEW df3 AS
+
+WITH customer_plus_geo AS(
+SELECT c.customer_unique_id, 
+		gc.geolocation_zip_code_prefix AS customer_geo_city, 
+		gc.geolocation_state AS customer_geo_state,
+		gc.geolocation_lat AS customer_geo_lat,
+		gc.geolocation_ing AS customer_geo_lng
+FROM geo_clean gc INNER JOIN customers c ON c.customer_zip_code = gc.geolocation_zip_code_prefix)
+
+SELECT * FROM customer_plus_geo INNER JOIN df2 USING(customer_unique_id);
+
+-- view with orders first 6 months
+
+CREATE VIEW orders_6m AS
+
+WITH first_6_months_dates AS(
+SELECT c.customer_unique_id, 
+	MIN(o.order_purchase_timestamp) as first_order_date, 
+	MIN(o.order_purchase_timestamp) + interval '182.5 day' AS six_months_from_first_order
+FROM Orders o INNER JOIN Customers c USING(customer_id)
+GROUP BY c.customer_unique_id
+ORDER BY c.customer_unique_id)
+
+SELECT DISTINCT order_id
+FROM first_6_months_dates
+	INNER JOIN customers USING(customer_unique_id)
+	INNER JOIN orders USING(customer_id)
+WHERE order_purchase_timestamp < six_months_from_first_order AND order_status <> 'canceled';
+
+
+
+-- now, let's add number of orders unavailable - df4
+
+CREATE VIEW df4 AS 
+WITH orders_status_bol_total AS(
+SELECT customer_unique_id, order_id, order_status, CASE WHEN order_status = 'unavailable' THEN TRUE ELSE NULL END AS order_unavailable_bol
+FROM customers INNER JOIN orders USING(customer_id)
+),
+
+customers_unavailable_count AS (
+
+SELECT customer_unique_id, COUNT(order_unavailable_bol) AS order_count_unavailable
+FROM orders_status_bol_total INNER JOIN orders_6m USING(order_id)
+GROUP BY customer_unique_id
+ORDER BY 2)
+
+SELECT * FROM df3 INNER JOIN customers_unavailable_count USING(customer_unique_id);
+
+-- number of days between approved and purchase
+
+           order_id             |         
+		     customer_id            |
+			  order_status | 
+			  order_purchase_timestamp |
+			    order_approved_at  |
+				 order_delivered_carrier_date | 
+				 order_delivered_customer_date |
+				  order_estimated_delivery_date
+
+WITH orders_plus_approval_wait AS(
+SELECT C.customer_unique_id, O.order_id, O.order_purchase_timestamp, o.order_approved_at, (o.order_approved_at - o.order_purchase_timestamp) as wait_for_seller_approval
+FROM orders o INNER JOIN customers c USING(customer_id)
+)
+
+SELECT customer_unique_id, AVG(wait_for_seller_approval) AS avg_wait_seller_approval
+FROM orders_plus_approval_wait INNER JOIN orders_6m USING(order_id)
+GROUP BY customer_unique_id;
+
+-- create d5
+
+CREATE VIEW df5 AS 
+WITH orders_plus_payment_approval_wait AS(
+SELECT C.customer_unique_id, O.order_id, O.order_purchase_timestamp, o.order_approved_at, (o.order_approved_at - o.order_purchase_timestamp) as wait_for_payment_approval
+FROM orders o INNER JOIN customers c USING(customer_id)
+),
+
+customers_plus_payment_approval_wait AS (
+
+SELECT customer_unique_id, AVG(wait_for_payment_approval) AS avg_payment_processing_time
+FROM orders_plus_payment_approval_wait INNER JOIN orders_6m USING(order_id)
+GROUP BY customer_unique_id)
+
+SELECT * FROM df4 INNER JOIN customers_plus_payment_approval_wait USING(customer_unique_id);
+
+
+-- confirm view created
+
+olist=# \d df5
+                                     View "public.df5"
+           Column            |            Type             | Collation | Nullable | Default
+-----------------------------+-----------------------------+-----------+----------+---------
+ customer_unique_id          | character varying(50)       |           |          |
+ customer_geo_city           | integer                     |           |          |
+ customer_geo_state          | character varying(10)       |           |          |
+ customer_geo_lat            | double precision            |           |          |
+ customer_geo_lng            | double precision            |           |          |
+ date_first_order            | timestamp without time zone |           |          |
+ year_first_order            | double precision            |           |          |
+ month_first_order           | double precision            |           |          |
+ total_orders_first_6_months | bigint                      |           |          |
+ total_paid_first_6_months   | double precision            |           |          |
+ order_count_unavailable     | bigint                      |           |          |
+ avg_payment_processing_time | interval                    |           |          |
+
+
+-- now, add lag between order date and seller delivery to carrier (avg_seller processing time)
+
+CREATE VIEW df6  AS
+WITH orders_plus_seller_processing_time AS(
+SELECT C.customer_unique_id, O.order_id, O.order_purchase_timestamp, o.order_approved_at, (o.order_delivered_carrier_date- o.order_purchase_timestamp) as seller_processing_time
+FROM orders_6m o6 INNER JOIN orders o USING(order_id) INNER JOIN customers c USING(customer_id)
+),
+
+customers_plus_seller_processing_time AS (
+
+SELECT customer_unique_id, AVG(seller_processing_time) AS avg_seller_processing_time
+FROM orders_plus_seller_processing_time
+GROUP BY customer_unique_id)
+
+SELECT * FROM df5 INNER JOIN customers_plus_seller_processing_time USING(customer_unique_id);
+
+-- add transit_time
+
+CREATE VIEW df7 AS
+WITH orders_plus_transit_time AS(
+SELECT C.customer_unique_id, O.order_id, (o.order_delivered_customer_date-o.order_delivered_carrier_date) as transit_time
+FROM orders_6m o6 INNER JOIN orders o USING(order_id) INNER JOIN customers c USING(customer_id)
+),
+
+customers_plus_transit_time AS (
+
+SELECT customer_unique_id, AVG(transit_time) AS avg_transit_time
+FROM orders_plus_transit_time
+GROUP BY customer_unique_id)
+
+SELECT * FROM df6 INNER JOIN customers_plus_transit_time USING(customer_unique_id);
+
+-- add order_lead_time for customer
+
+CREATE VIEW df8 AS
+WITH orders_plus_lead_time AS(
+SELECT C.customer_unique_id, O.order_id, (o.order_delivered_customer_date-o.order_purchase_timestamp) as lead_time
+FROM orders_6m o6 INNER JOIN orders o USING(order_id) INNER JOIN customers c USING(customer_id)
+),
+
+customers_plus_avg_lead_time AS (
+
+SELECT customer_unique_id, AVG(lead_time) AS avg_lead_time
+FROM orders_plus_lead_time
+GROUP BY customer_unique_id)
+
+SELECT * FROM df7 INNER JOIN customers_plus_avg_lead_time USING(customer_unique_id);
+
+-- add number of items per order
+
+CREATE VIEW df9 AS
+WITH items_per_order AS (
+SELECT customer_unique_id, order_id, COUNT(order_item_id) AS item_count
+FROM customers INNER JOIN orders USING(customer_id) INNER JOIN order_items USING(order_id)
+GROUP BY customer_unique_id, order_id), 
+
+avg_item_count_per_order AS (
+
+SELECT customer_unique_id, AVG(item_count) AS avg_item_count_per_order
+FROM items_per_order INNER JOIN orders_6m USING(order_id)
+GROUP BY customer_unique_id)
+
+SELECT * FROM df8 INNER JOIN avg_item_count_per_order USING (customer_unique_id);
+
+-- add number of products per order (distinct product)
+
+CREATE VIEW df10 AS
+WITH product_count_per_order AS (
+SELECT customer_unique_id, order_id, COUNT(DISTINCT product_id) AS product_count
+FROM customers INNER JOIN orders USING(customer_id) INNER JOIN order_items USING(order_id)
+GROUP BY customer_unique_id, order_id), 
+
+avg_product_count_per_order AS (
+
+SELECT customer_unique_id, AVG(product_count) AS avg_product_count_per_order
+FROM product_count_per_order INNER JOIN orders_6m USING(order_id)
+GROUP BY customer_unique_id)
+
+SELECT * FROM df9 INNER JOIN avg_product_count_per_order USING (customer_unique_id);
+
+-- change layoyt
+
+\x on
+
+-- Do customers missing their shipping deadline correlate with LTV?
+
+CREATE VIEW df11 AS
+WITH orders_shipped_past_deadline AS (
+SELECT *
+FROM customers INNER JOIN orders USING(customer_id) INNER JOIN order_items USING(order_id)
+WHERE  shipping_limit_date > order_delivered_carrier_date),
+
+order_shipped_late AS(
+
+SELECT customer_unique_id, COUNT(DISTINCT order_id) as orders_shipped_late
+FROM orders_shipped_past_deadline INNER JOIN orders_6m USING(order_id)
+GROUP BY customer_unique_id)
+
+SELECT * FROM df10 INNER JOIN order_shipped_late USING(customer_unique_id);
+
+-- number of items  grouped by product, and order number
+
+CREATE VIEW df12 AS
+WITH units_per_product_by_customer AS(
+SELECT customer_unique_id, product_id, COUNT(product_id) AS units_per_product
+FROM customers INNER JOIN orders USING(customer_id) INNER JOIN order_items USING(order_id) INNER JOIN orders_6m USING(order_id)
+GROUP BY customer_unique_id, product_id),
+
+avg_quantity_by_product AS (
+
+SELECT customer_unique_id, AVG(units_per_product) AS avg_quantity_by_product
+FROM units_per_product_by_customer
+GROUP BY customer_unique_id)
+
+SELECT * FROM df11 INNER JOIN avg_quantity_by_product USING(customer_unique_id);
+
+-- average price per product
+
+CREATE VIEW df13 AS 
+WITH price_per_unit_by_customer AS
+(
+SELECT customer_unique_id, AVG(price) AS average_price_per_unit
+FROM customers INNER JOIN orders USING(customer_id) INNER JOIN order_items USING(order_id) INNER JOIN orders_6m USING(order_id)
+GROUP BY customer_unique_id
+)
+SELECT * FROM df12 INNER JOIN price_per_unit_by_customer USING(customer_unique_id);
+
+-- average freight cost per order, freight value column is grouped by products within an order.
+-- If order has 2 units of product X and each have freight cost Y. Y is the freight price for the 2 units of the same product. Gets repeated in each line, not split.
+
+CREATE VIEW df14 AS
+WITH freight_costs_corrected AS (
+	SELECT DISTINCT customer_unique_id, order_id, product_id, freight_value
+	FROM customers INNER JOIN orders USING(customer_id) INNER JOIN order_items USING(order_id) INNER JOIN orders_6m USING(order_id)
+),
+
+customer_order_aggregates AS (
+SELECT customer_unique_id, order_id, SUM(freight_value) AS order_freight_cost
+FROM freight_costs_corrected
+GROUP BY customer_unique_id, order_id), 
+
+customer_aggregates AS (
+
+SELECT customer_unique_id, AVG(order_freight_cost) AS avg_freight_cost_per_order
+FROM customer_order_aggregates
+GROUP BY customer_unique_id)
+
+SELECT * 
+FROM df13 INNER JOIN customer_aggregates USING (customer_unique_id);
+
+-- NOTE - How many orders were left out of analysis as they fall outsitde of first 6 months?
+-- Less than 2%. OK. 98.76% of orders provided fall in customer's first 6 months.
+
+olist=# SELECT COUNT(DISTINCT order_id) FROM orders_6m;
+ count
+-------
+ 98207
+(1 row)
+
+
+olist=# SELECT COUNT(DISTINCT order_id) FROM orders;
+ count
+-------
+ 99441
+(1 row)
+
+-- how many product categories were purchased from? - 71
+
+
+SELECT COUNT(DISTINCT product_category_name_english)
+FROM product_category_name_translation
+	INNER JOIN products USING(product_category_name)
+	INNER JOIN order_items USING(product_id)
+	INNER JOIN orders_6m USING(order_id);\
+
+
+
+-- Total order_count
+
+ order_count_total
+-------------------
+             98207
+(1 row)
+
+-- order_count_by_category
+-- SO far, in Excel did proportion of order_count to total_orders
+-- The top 8 categories were (8/71 - 12%) were present in over 50% of the orders (51%) with bed_bad_table is almost 10% of orders
+
+
+	SELECT product_category_name_english, COUNT(DISTINCT order_id) AS order_count_by_category
+	FROM product_category_name_translation
+		INNER JOIN products USING(product_category_name)
+		INNER JOIN order_items USING(product_id)
+		INNER JOIN orders_6m USING(order_id)
+		INNER JOIN order_payments USING(order_id)
+	GROUP BY product_category_name_english
+	ORDER BY 2 DESC
+
+-- NEXT: Boolean, did customer purchase from top 8 categories
+-- PROBLEM - How to make it even across customers. Will customers that have 1 order be less likely to have diversity.
+-- How to boil down info at customer level. 
+
+-- number of customers grouped by category
+
+SELECT product_category_name_english, COUNT(DISTINCT customer_unique_id) AS customer_count_by_category
+	FROM product_category_name_translation
+		INNER JOIN products USING(product_category_name)
+		INNER JOIN order_items USING(product_id)
+		INNER JOIN orders USING(order_id)
+		INNER JOIN customers USING(customer_id)
+	WHERE order_id IN (SELECT * FROM orders_6m) 
+	GROUP BY product_category_name_english
+	ORDER BY 2 DESC
+
+-- total customers
+
+olist=# select count(distinct customer_unique_id) from customers inner join orders using(customer_id) inner join orders_6m using(order_id);
+ count
+-------
+ 95558
+(1 row)
+
+-- average price per category -- would looking at the correlation between LTV and top x categories be fair as some categorie have prices that are more expensive?
+-- 
+
+SELECT product_category_name_english, AVG(price) AS avg_price_per_product
+	FROM product_category_name_translation
+		INNER JOIN products USING(product_category_name)
+		INNER JOIN order_items USING(product_id)
+		INNER JOIN order_payments USING(order_id)
+	GROUP BY product_category_name_english
+	ORDER BY 2 DESC
+
+-- top 10 categories based on number of customers 
+
+CREATE VIEW top_10_product_categories AS
+SELECT product_category_name_english, COUNT(DISTINCT customer_unique_id) AS customer_count_by_category
+	FROM product_category_name_translation
+		INNER JOIN products USING(product_category_name)
+		INNER JOIN order_items USING(product_id)
+		INNER JOIN orders USING(order_id)
+		INNER JOIN customers USING(customer_id)
+	WHERE order_id IN (SELECT * FROM orders_6m) 
+	GROUP BY product_category_name_english
+	ORDER BY 2 DESC
+	LIMIT 10;
+
+-- create boolean column for ordered from top 10 prod categories
+
+CREATE VIEW df15 AS
+WITH customers_top_10_cat AS(
+	SELECT DISTINCT customer_unique_id, 
+			CASE WHEN product_category_name_english IN (SELECT product_category_name_english FROM top_10_product_categories)
+			THEN 1
+			ELSE 0
+			END AS ordered_from_top_10_prod_category_bol
+	FROM product_category_name_translation
+			INNER JOIN products USING(product_category_name)
+			INNER JOIN order_items USING(product_id)
+			INNER JOIN orders USING(order_id)
+			INNER JOIN customers USING(customer_id)
+	ORDER BY 1
+)
+SELECT * FROM df14 
+INNER JOIN customers_top_10_cat USING(customer_unique_id);
+
+-- # sellers per customer
+
+SELECT customer_unique_id, COUNT(DISTINCT seller_id) as seller_count, COUNT(DISTINCT order_id)
+FROM customers 
+	INNER JOIN orders USING(customer_id)
+	INNER JOIN order_items USING(order_id)
+GROUP BY customer_unique_id
+ORDER BY 2 DESC;
+
+-- sellers by average review
+
+CREATE VIEW sellers_perfect_review AS
+WITH seller_order_review_scores AS (
+	SELECT DISTINCT seller_id, order_id, review_score
+	FROM customers 
+		INNER JOIN orders USING(customer_id)
+		INNER JOIN order_items USING(order_id)
+		INNER JOIN reviews USING(order_id)
+	WHERE order_id IN (SELECT * from orders_6m)
+)
+SELECT seller_id
+FROM seller_order_review_scores
+GROUP BY seller_id
+HAVING AVG(review_score) = 5
+
+-- customers_bol_sellers_perfect_rating
+
+CREATE VIEW df16 AS
+WITH customers_bol_seller_perfect_avg_review_score AS(
+	SELECT DISTINCT customer_unique_id, 
+			CASE WHEN seller_id IN (SELECT seller_id FROM sellers_perfect_review)
+			THEN 1
+			ELSE 0
+			END AS ordered_from_seller_perfect_avg_review_bol
+	FROM order_items
+			INNER JOIN orders USING(order_id)
+			INNER JOIN customers USING(customer_id)
+	ORDER BY 2 DESC
+)
+SELECT * FROM df15 INNER JOIN customers_bol_seller_perfect_avg_review_score USING(customer_unique_id)
+LIMIT 1;
+
+-- seller --- ??
+
+SELECT seller_id, COUNT(DISTINCT  state)
+FROM order_items
+GROUP BY seller_id
+ORDER BY 2 DESC;
+
+
+
+	
+
+
+
+ 
