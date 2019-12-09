@@ -1294,4 +1294,20 @@ WHERE order_id IN (SELECT * FROM orders_6m) AND order_status <> 'canceled';
 
 \COPY (SELECT * FROM cgeo1) TO 'C:/Users/rache/DATA/Olist/GITHUB_OLIST/customer_demographics.csv' CSV HEADER;
 
+-- df_adjustment as timedelta (interval) is not readible in OLS regression model
+
+CREATE VIEW df021 AS
+SELECT *, 
+	EXTRACT(DAY FROM avg_payment_processing_time) AS avg_days_payment_processing_time,
+	EXTRACT(DAY FROM avg_seller_processing_time) AS avg_days_seller_processing_time,
+	EXTRACT(DAY FROM avg_transit_time) AS avg_days_transit_time,
+	EXTRACT(DAY FROM avg_lead_time) AS avg_days_lead_time,
+	EXTRACT(DAY FROM avg_survey_lag) AS avg_days_survey_lag,
+	EXTRACT(DAY FROM avg_review_lag) AS avg_daysreview_lag
+FROM df020;
+
+\COPY (SELECT * FROM df021) TO 'C:/Users/rache/DATA/Olist/GITHUB_OLIST/main_df.csv' CSV HEADER;
+
+
+
 
