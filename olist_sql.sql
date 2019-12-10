@@ -1308,6 +1308,83 @@ FROM df020;
 
 \COPY (SELECT * FROM df021) TO 'C:/Users/rache/DATA/Olist/GITHUB_OLIST/main_df.csv' CSV HEADER;
 
+-- Add State
+
+CREATE VIEW df022 AS
+WITH customer_plus_state AS (
+	SELECT DISTINCT customer_unique_id, customer_state
+	FROM customers)
+SELECT * FROM df021 LEFT JOIN customer_plus_state USING(customer_unique_id);
+
+-- customers by count orders
+
+WITH customer_by_count AS(
+	SELECT customer_unique_id, COUNT(order_id)as order_count
+	FROM customers INNER JOIN orders USING(customer_id)
+	WHERE order_id IN (SELECT * FROM orders_6m) AND order_status <> 'canceled'
+	GROUP BY customer_unique_id)
+
+SELECT order_count, COUNT(customer_unique_id)
+FROM customer_by_count
+GROUP BY order_count;
+
+/* 
+
+ order_count | count
+-------------+-------
+           9 |     2
+           3 |   137
+           5 |     2
+           4 |    22
+           6 |     4
+           2 |  2259
+           7 |     1
+           1 | 93131
+(8 rows)
+*/
+
+WITH total_paid_per_order AS (
+	SELECT EXTRACT(YEAR FROM order_purchase_timestamp) AS year_order, order_id, SUM(payment_value) AS order_total
+	FROM orders INNER JOIN order_payments USING(order_id)
+	WHERE order_id IN (SELECT * FROM orders_6m) AND order_status <> 'canceled'
+	GROUP BY year_order, order_id
+)
+
+SELECT year_order, AVG(order_total)
+FROM total_paid_per_order
+GROUP BY year_order
+ORDER BY year_order;
+
+/*
+
+ year_order |       avg
+------------+------------------
+       2016 | 179.044205298013
+       2017 | 160.318089300073
+       2018 | 160.844434494694
+(3 rows)
+*/
 
 
+WITH items_per_order AS (
+	SELECT EXTRACT(YEAR FROM order_purchase_timestamp) AS year_order, order_id, COUNT(order_item_id) AS items_per_order
+	FROM orders INNER JOIN order_items USING(order_id)
+	WHERE order_id IN (SELECT * FROM orders_6m) AND order_status <> 'canceled'
+	GROUP BY year_order, order_id
+)
 
+SELECT year_order, AVG(items_per_order) 
+FROM items_per_order
+GROUP BY year_order
+ORDER BY year_order;
+
+/* 
+
+ year_order |        avg
+------------+--------------------
+       2016 | 1.1872909698996656
+       2017 | 1.1403992052023121
+       2018 | 1.1412834345644547
+(3 rows)
+
+*/
